@@ -43,13 +43,11 @@
 #
 # todos:
 # - cache disk space check
-# - random kiosk queue
-# - qiv
 #
-# version: 0.1 - early dirty alpha hack
+# version: 0.2 - early dirty alpha hack
 # changelog:
-# 
-# 
+# - added random kiosk q
+# - added random qiv for local pics
 # 
 
 scriptid="avocado"
@@ -61,7 +59,7 @@ import os
 import base64
 import time
 import glob
-import httplib, urllib
+import random
 import logging
 from shutil import copy
 from logging.handlers import SysLogHandler
@@ -79,6 +77,20 @@ from subprocess import Popen, PIPE, STDOUT
 
 # daemon filehandles
 import resource
+
+def avocadoExit(code=0):
+
+	logger.warn("killing dillo")	
+	p = Popen("killall dillo", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+	logger.warn("killing midori")	
+	p = Popen("killall midori", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+	logger.warn("killing omxplayer")	
+	p = Popen("killall omxplayer", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+	logger.warn("killing iceweasel")	
+	p = Popen("killall iceweasel", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+
+	sys.exit(code)
+
 
 def human_size(size_bytes):
     """
@@ -105,7 +117,7 @@ def human_size(size_bytes):
 
     return "%s %s" % (formatted_size, suffix)
 
-def realDaemon(avocadoDir, avocadoWebDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode=False):
+def realDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode=False):
 
         # first fork
     try:
@@ -159,9 +171,9 @@ def realDaemon(avocadoDir, avocadoWebDir, avocadoQueueDir, avocadoCacheDir, avoc
     os.dup2(0, 2)
 
     # daemon code
-    avocadoDaemon(avocadoDir, avocadoWebDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode)
+    avocadoDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode)
 
-def avocadoDaemon(avocadoDir, avocadoWebDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode=False):
+def avocadoDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode=False):
 
 	logger.info("avocadoDaemon started.")
 
@@ -170,9 +182,9 @@ def avocadoDaemon(avocadoDir, avocadoWebDir, avocadoQueueDir, avocadoCacheDir, a
 		while True:
 			time.sleep(2)
 			logger.info("avocadoDaemon run nextInQ")
-			nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,avocadoWebDir, avocadoKioskQueueDir, kioskmode)
-	except:
-		logger.error("avocadoDaemon exited unexpectedly")
+			nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,avocadoWebDir, avocadoLocalPicsDir, avocadoKioskQueueDir, kioskmode)
+	except Exception, e:
+		logger.error("avocadoDaemon exited unexpectedly "+str(e.message))
 
 
 def unsetWebStatus(avocadoDir):
@@ -276,15 +288,18 @@ def getCContents(avocadoCacheDir):
 			
 
 
-def getQContents(avocadoQueueDir):
+def getQContents(avocadoQueueDir, randomq=False):
 
         q={}
 
         _q = [s for s in os.listdir(avocadoQueueDir)
-
-        if os.path.isfile(os.path.join(avocadoQueueDir, s))]
-
+       	if os.path.isfile(os.path.join(avocadoQueueDir, s))]
         _q.sort(key=lambda s: os.path.getmtime(os.path.join(avocadoQueueDir, s)))
+
+
+	if randomq==True:
+		random.shuffle(_q,random.random)
+		_q=[_q[0]]
 
 
         for _itemname in _q:
@@ -313,28 +328,30 @@ def getQContents(avocadoQueueDir):
 
 	return q
 
-def nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,avocadoWebDir, avocadoKioskQueueDir, kioskmode=False):
+def nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,avocadoWebDir, avocadoLocalPicsDir, avocadoKioskQueueDir, kioskmode=False):
 	
 	contents = getQContents(avocadoQueueDir)
 
 	try:
 		job = contents[contents.keys()[0]]
 	except IndexError:
+		logger.info("no job found in queue")
 		if kioskmode:
-			contents = getQContents(avocadoKioskQueueDir)
+			logger.info("kiosk mode active")
+			contents = getQContents(avocadoKioskQueueDir, True)
 		else:
 			return
 
         try:
                 job = contents[contents.keys()[0]]
-		logger.info("nothin in queue, usig kiosk queue")
+		logger.info("nothing in queue, usig kiosk queue")
         except IndexError:
 		logger.info("avocado kiosk queue is empty")
 		return
 
 	jobname = contents.keys()[0]
 
-	logger.info("next Q item: "+jobname+" "+str(job))
+	logger.info("next Q item ("+job["type"]+"): "+jobname+" "+str(job))
 
 	if job["type"]=="youtube":
 
@@ -392,6 +409,14 @@ def nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,a
 		logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
 
 		removeFromQ(avocadoQueueDir, jobname)
+
+	if job["type"]=="pics":
+		_command="timeout "+job["timeout"]+" qiv --fullscreen --no_statusbar --maxpect --slide --random  --readonly --autorotate --recursivedir --display :0.0 "+avocadoLocalPicsDir+" 2>/dev/null"
+		logger.info(_command)
+		p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
+		logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
+		logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
+
 
 def listCache(avocadoCacheDir,html=False):
 
@@ -469,97 +494,105 @@ def main():
 	avocadoGroup="www-data"
 
 	try:
-		avocadoUid=getpwnam(avocadoUser).pw_uid
-		avocadoGid=getpwnam(avocadoGroup).pw_uid
-	except:
-		logger.info("user or group not found: "+avocadoUser+" "+avocadoGroup)
-		avocadoUid=0
-		avocadoGid=0
 
-
-	avocadoDir="/var/lib/avocado/"
-	avocadoWebDir="/var/www/"
-	avocadoQueueDir="/var/lib/avocado/queue/"
-	avocadoKioskQueueDir="/var/lib/avocado/kioskqueue/"
-	avocadoCacheDir="/var/lib/avocado/cache/"
-	avocadoCacheValidateDir="/var/lib/avocado/cache_validate/"
-
-
-	if not os.path.isdir(avocadoDir):
-		os.makedirs(avocadoDir)
-		os.makedirs(avocadoQueueDir)
-		os.makedirs(avocadoKioskQueueDir)
-		os.makedirs(avocadoCacheDir)
-		os.makedirs(avocadoCacheValidateDir)
-		os.makedirs(avocadoWebDir)
-		os.chown(avocadoDir, avocadoUid, avocadoGid)
-		os.chown(avocadoQueueDir, avocadoUid, avocadoGid)
-		os.chown(avocadoKioskQueueDir, avocadoUid, avocadoGid)
-		os.chown(avocadoCacheDir, avocadoUid, avocadoGid)
-		os.chown(avocadoCacheValidateDir, avocadoUid, avocadoGid)
-
-		if os.path.isdir(avocadoQueueDir):
-			logger.info(avocadoDir+" created.")
-		else:
-			logger.info(avocadoDir+" does not exists and creation failed, exiting.")
-			sys.exit(1)	
-
-	_type=None
-
-	if options.daemon:
-		#realDaemon(avocadoDir, avocadoWebDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, options.kioskmode)
-		avocadoDaemon(avocadoDir, avocadoWebDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, options.kioskmode)
-
-	if not options.addtimeout:
-		_timeout="30m"
-	else:
-		_timeout=options.addtimeout
-
-	if options.removekiosk:
 		try:
-			dirf = glob.glob(avocadoKioskQueueDir+"*")
-			for file in dirf:
-				os.unlink(file)
-			sys.exit(0)
+			avocadoUid=getpwnam(avocadoUser).pw_uid
+			avocadoGid=getpwnam(avocadoGroup).pw_uid
 		except:
-			sys.exit(1)
-
-	if options.add and options.addtype:
-
-		if options.addtype == "youtube":
-			_type="youtube"
-		elif options.addtype == "pics":
-			_type="pics"
-		elif options.addtype == "video":
-			_type="video"
-		elif options.addtype == "webbrowse":
-			_type="webbrowse"
-
-		if not _type:
-			logger.error("unkown type: "+options.addtype+" for "+options.add)		
-			sys.exit(1)
-
-		addToQ(avocadoQueueDir, avocadoKioskQueueDir, options.add, _type, _timeout) 
-
-	elif options.list:
-		listQ(avocadoQueueDir,options.htmloutput)
-
-	elif options.listcache:
-		listCache(avocadoCacheDir,options.htmloutput)
-
-	elif options.remove:
-		removeFromQ(avocadoQueueDir, options.remove)
-
-	elif options.start:
-		nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,avocadoWebDir, avocadoKioskQueueDir, options.kioskmode)
+			logger.info("user or group not found: "+avocadoUser+" "+avocadoGroup)
+			avocadoUid=0
+			avocadoGid=0
 
 
-	else:
-		logger.error("invalid arguments.")
-		sys.exit(2)
+		avocadoDir="/var/lib/avocado/"
+		avocadoWebDir="/var/www/"
+		avocadoLocalPicsDir="/var/lib/avocado/local_pics/"
+		avocadoQueueDir="/var/lib/avocado/queue/"
+		avocadoKioskQueueDir="/var/lib/avocado/kioskqueue/"
+		avocadoCacheDir="/var/lib/avocado/cache/"
+		avocadoCacheValidateDir="/var/lib/avocado/cache_validate/"
 
 
+		if not os.path.isdir(avocadoDir):
+			os.makedirs(avocadoDir)
+			os.makedirs(avocadoQueueDir)
+			os.makedirs(avocadoKioskQueueDir)
+			os.makedirs(avocadoCacheDir)
+			os.makedirs(avocadoCacheValidateDir)
+			os.makedirs(avocadoWebDir)
+			os.makedirs(avocadoLocalPicsDir)
+			os.chown(avocadoDir, avocadoUid, avocadoGid)
+			os.chown(avocadoQueueDir, avocadoUid, avocadoGid)
+			os.chown(avocadoKioskQueueDir, avocadoUid, avocadoGid)
+			os.chown(avocadoCacheDir, avocadoUid, avocadoGid)
+			os.chown(avocadoLocalPicsDir, avocadoUid, avocadoGid)
+			os.chown(avocadoCacheValidateDir, avocadoUid, avocadoGid)
+	
+			if os.path.isdir(avocadoQueueDir):
+				logger.info(avocadoDir+" created.")
+			else:
+				logger.info(avocadoDir+" does not exists and creation failed, exiting.")
+				sys.exit(1)	
 
+		_type=None
+	
+		if options.daemon:
+			#realDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir,  avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, options.kioskmode)
+			avocadoDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir,  avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, options.kioskmode)
+
+		if not options.addtimeout:
+			_timeout="30m"
+		else:
+			_timeout=options.addtimeout
+
+		if options.removekiosk:
+			try:
+				dirf = glob.glob(avocadoKioskQueueDir+"*")
+				for file in dirf:
+					os.unlink(file)
+				sys.exit(0)
+			except:
+				sys.exit(1)
+
+		if options.add and options.addtype:
+
+			if options.addtype == "youtube":
+				_type="youtube"
+			elif options.addtype == "pics":
+				_type="pics"
+			elif options.addtype == "video":
+				_type="video"
+			elif options.addtype == "webbrowse":
+				_type="webbrowse"
+
+			if not _type:
+				logger.error("unkown type: "+options.addtype+" for "+options.add)		
+				sys.exit(1)
+
+			addToQ(avocadoQueueDir, avocadoKioskQueueDir, options.add, _type, _timeout) 
+
+		elif options.list:
+			listQ(avocadoQueueDir,options.htmloutput)
+	
+		elif options.listcache:
+			listCache(avocadoCacheDir,options.htmloutput)
+
+		elif options.remove:
+			removeFromQ(avocadoQueueDir, options.remove)
+
+		elif options.start:
+			nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,avocadoWebDir, avocadoLocalPicsDir, avocadoKioskQueueDir, options.kioskmode)
+
+
+		else:
+			logger.error("invalid arguments.")
+			sys.exit(2)
+
+
+	except KeyboardInterrupt:
+		logger.error("Ctrl+C recognized.")
+		logger.error("calling exit routines.")
+		avocadoExit(2)
 
 
 if __name__ == '__main__':
