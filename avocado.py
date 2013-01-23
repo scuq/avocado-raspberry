@@ -6,7 +6,7 @@
 # Copyright (C) 2013    Stefan Nistelberger (scuq at abyle.org)
 #
 # avocado 
-# avocado - geek kiosk script for rasbian
+# avocado - geek kiosk script for raspbian
 #
 # This program is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License
@@ -42,11 +42,13 @@
 # for your convenience the avocado queue can be viewed and filled by a simple webinterface running on lighttpd with php5-cgi 
 #
 # todos:
-# - cache disk space check
+# - background downloading
 #
-# version: 0.2 - early dirty alpha hack
+# version: 0.3 - early dirty alpha hack
 # changelog:
+# - streaming urls
 # - added random kiosk q
+# - cache dir space check
 # - added random qiv for local pics
 # 
 
@@ -86,10 +88,20 @@ def avocadoExit(code=0):
 	p = Popen("killall midori", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
 	logger.warn("killing omxplayer")	
 	p = Popen("killall omxplayer", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+	p = Popen("killall omxplayer.bin", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
 	logger.warn("killing iceweasel")	
 	p = Popen("killall iceweasel", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+	logger.warn("killing qiv")	
+	p = Popen("killall qiv", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
 
 	sys.exit(code)
+
+def get_fs_freespace(pathname):
+    "Get the free space of the filesystem containing pathname"
+    stat= os.statvfs(pathname)
+    # use f_bfree for superuser, or f_bavail if filesystem
+    # has reserved space for superuser
+    return stat.f_bavail*stat.f_bsize
 
 
 def human_size(size_bytes):
@@ -355,45 +367,74 @@ def nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,a
 
 	if job["type"]=="youtube":
 
-		# check if a think that there is a valid cached file
+		_vidsize=0
+
+		# check if we have a valid cached file
 		if not os.path.exists(avocadoCacheValidateDir+base64.b64encode(job["item"])):
 
 			if os.path.exists(avocadoCacheDir+base64.b64encode(job["item"])):
 				logger.warn("removing invalid cached file: "+avocadoCacheDir+base64.b64encode(job["item"]))
 				os.unlink(avocadoCacheDir+base64.b64encode(job["item"]))
 
+			# don't download just check some vid file infos
 			_command="cclive -n "+job["item"]
 			logger.info(_command)
 			p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
 			_statustext="DOWNLOADING ...<BR>"
 			for line in p.stderr.readlines():
 				if line.count("WARNING") == 0:
+					logger.info(line.decode("utf-8"))
 					_statustext += line.decode("utf-8")
+
+					# try to parse the file size of the vid from 
+					#cclives output, for later disk space checkung
+
+					match = re.search(r" (\d{0,20}\.\d{0,4})M ", _statustext)
+					if match:
+						_parsed_vidsize = match.group(1)
+						try:
+							_vidsize = float(_parsed_vidsize)*1024*1024
+							logger.info("video file size parsing successfull, file size in bytes: "+str(_vidsize))
+						except Exception, e:
+							_vidsize = 500 * 1024 * 1024	
+							logger.info("video file size parsing failed, assuming file size in bytes: "+str(_vidsize)+" "+str(e.message))	
+						
+					else:
+						_vidsize = 500 * 1024 * 1024	
+						logger.info("video file size parsing failed, assuming file size in bytes: "+str(_vidsize))	
+
 					_statustext += "<br>"
 
 			
-			setWebStatus(avocadoDir,_statustext)
+			if get_fs_freespace(avocadoCacheDir)-104857600 >  _vidsize:
+				logger.info("enough space to cache youtube file, available space: "+str(get_fs_freespace(avocadoCacheDir)-104857600)+" video size: "+str(_vidsize))
 
 			
-			_command="cclive --format=fmt22_720p --output-file="+avocadoCacheDir+base64.b64encode(job["item"])+" "+job["item"]
-			logger.info(_command)
-			p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
-			logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
-			logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
+				setWebStatus(avocadoDir,_statustext)
+
+			
+				_command="cclive --format=fmt22_720p --output-file="+avocadoCacheDir+base64.b64encode(job["item"])+" "+job["item"]
+				logger.info(_command)
+				p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
+				logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
+				logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
 
 
-			if os.path.isfile(avocadoCacheDir+base64.b64encode(job["item"])):
-				logger.info("creating cache valid  file: "+avocadoCacheValidateDir+base64.b64encode(job["item"]))
-				open(avocadoCacheValidateDir+base64.b64encode(job["item"]), 'w').close() 
+				if os.path.isfile(avocadoCacheDir+base64.b64encode(job["item"])):
+					logger.info("creating cache valid  file: "+avocadoCacheValidateDir+base64.b64encode(job["item"]))
+					open(avocadoCacheValidateDir+base64.b64encode(job["item"]), 'w').close() 
 
-		_command="export DISPLAY=:0.0 && omxplayer "+avocadoCacheDir+base64.b64encode(job["item"])
+				_command="export DISPLAY=:0.0 && omxplayer "+avocadoCacheDir+base64.b64encode(job["item"])
 
-		logger.info(_command)
-		setWebStatus(avocadoDir,_command)
+				logger.info(_command)
+				setWebStatus(avocadoDir,_command)
 
-		p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
-		logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
-		logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
+				p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
+				logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
+				logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
+
+			else: 
+				logger.info("NOT enough space to cache youtube file, available space: "+str(get_fs_freespace(avocadoCacheDir)-104857600)+" video size: "+str(_vidsize))
 
 		unsetWebStatus(avocadoDir)
 		removeFromQ(avocadoQueueDir, jobname)
@@ -417,6 +458,18 @@ def nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,a
 		logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
 		logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
 
+		removeFromQ(avocadoQueueDir, jobname)
+
+	if job["type"]=="stream":
+		_command="export DISPLAY=:0.0 && timeout "+job["timeout"]+" omxplayer "+job["item"]+" 2>/dev/null"
+		logger.info(_command)
+		p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
+		logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
+		logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
+
+		removeFromQ(avocadoQueueDir, jobname)
+
+
 
 def listCache(avocadoCacheDir,html=False):
 
@@ -424,12 +477,22 @@ def listCache(avocadoCacheDir,html=False):
 
         if html:
                 print "<table>"
+		print "<tr>"
+		print "<th align=\"center\"><bold>Timestamp&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</bold></th>"
+		print "<th align=\"center\"><bold>Size</bold></th>"
+		print "<th align=\"center\"><bold>Item</bold></th>"
+		print "<th align=\"center\"><bold>Cache File-Name</bold></th>"
+		print "</tr>"
                 for item in contents:
                         print "<tr>"
                         if str(contents[item]["type"]) == "youtube":
                                 print '<td><img src="images/youtube.png"></td>'
                         elif str(contents[item]["type"]) == "webbrowse":
                                 print '<td><img src="images/webbrowse.png"></td>'
+                        elif str(contents[item]["type"]) == "stream":
+                                print '<td><img src="images/stream.png"></td>'
+                        elif str(contents[item]["type"]) == "pics":
+                                print '<td><img src="images/pics.png"></td>'
                         print "<td>"+str(time.ctime(contents[item]["mtime"]))+"</td>"
                         print "<td>"+str(contents[item]["size"])+"</td>"
                         print "<td>"+str(contents[item]["item"])+"</td>"
@@ -455,16 +518,25 @@ def listQ(avocadoQueueDir,html=False):
 
 	if html:
 		print "<table>"
+		print "<tr>"
+		print "<th align=\"center\" colspan=\"2\"><bold>QItemName&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</bold></th>"
+		print "<th align=\"center\"><bold>Mod Date</bold></th>"
+		print "<th align=\"center\"><bold>Timeout</bold></th>"
+		print "<th align=\"center\"><bold>Item</bold></th>"
+		print "</tr>"
 		for item in contents:
 			print "<tr>"
 			if str(contents[item]["type"]) == "youtube":
 				print '<td><img src="images/youtube.png"></td>'
                         elif str(contents[item]["type"]) == "webbrowse":
                                 print '<td><img src="images/webbrowse.png"></td>'
+                        elif str(contents[item]["type"]) == "stream":
+                                print '<td><img src="images/stream.png"></td>'
+                        elif str(contents[item]["type"]) == "pics":
+                                print '<td><img src="images/pics.png"></td>'
 			print "<td>"+item+"</td>"
-			print "<td>"+str(contents[item]["mtime"])+"</td>"
-			print "<td>"+str(contents[item]["type"])+"</td>"
-			print "<td>"+str(contents[item]["timeout"])+"</td>"
+			print "<td align=\"center\">"+str(time.ctime(contents[item]["mtime"]))+"&nbsp;&nbsp;&nbsp;&nbsp;</td>"
+			print "<td align=\"center\">"+str(contents[item]["timeout"])+"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td>"
 			print "<td>"+str(contents[item]["item"])+"</td>"
 			print "</tr>"
 		print "</table>"
@@ -478,15 +550,18 @@ def main():
 
         parser = OptionParser()
         parser.add_option("-a", "--add", dest="add", help="add to avocado queue")
-        parser.add_option("-t", "--type", dest="addtype", help="required for -a, type of item, valid-types: youtube, pics, video, webbrowse")
+        parser.add_option("-t", "--type", dest="addtype", help="required for -a, type of item, valid-types: youtube, pics, video, webbrowse, stream")
         parser.add_option("-o", "--timeout", dest="addtimeout", help="optional for -a, timeout of the added item, e.g. stop display of a webpage after 5m, for valid options see \"man timeout\", default is 30m")
         parser.add_option("-r", "--remove", dest="remove", help="remove from avocado queue")
 	parser.add_option("-D", "--daemon", action="store_true", dest="daemon", default=False, help="start avocado queue worker daemon")
 	parser.add_option("-s", "--start", action="store_true", dest="start", default=False, help="start next item and remove it from queue")
 	parser.add_option("-k", "--kiosk", action="store_true", dest="kioskmode", default=False, help="repeats last items till new ones are added.")
-	parser.add_option("--remove-kiosk", action="store_true", dest="removekiosk", default=False, help="flush the kiosk queue")
+	parser.add_option("--flush", action="store_true", dest="flushq", default=False, help="flush the queue")
+	parser.add_option("--flush-cache", action="store_true", dest="flushc", default=False, help="flush the cache")
+	parser.add_option("--flush-kiosk", action="store_true", dest="flushkioskq", default=False, help="flush the kiosk queue")
 	parser.add_option("--html", action="store_true", dest="htmloutput", default=False, help="generate html output")
 	parser.add_option("-l", "--list", action="store_true", dest="list", default=False, help="list avocado queue")
+	parser.add_option("--list-kiosk", action="store_true", dest="listkiosk", default=False, help="list avocado kiosk queue")
 	parser.add_option("-c", "--list-cache", action="store_true", dest="listcache", default=False, help="list (youtube) cached files")
         (options, args) = parser.parse_args()
 
@@ -511,6 +586,7 @@ def main():
 		avocadoKioskQueueDir="/var/lib/avocado/kioskqueue/"
 		avocadoCacheDir="/var/lib/avocado/cache/"
 		avocadoCacheValidateDir="/var/lib/avocado/cache_validate/"
+
 
 
 		if not os.path.isdir(avocadoDir):
@@ -545,7 +621,7 @@ def main():
 		else:
 			_timeout=options.addtimeout
 
-		if options.removekiosk:
+		if options.flushkioskq:
 			try:
 				dirf = glob.glob(avocadoKioskQueueDir+"*")
 				for file in dirf:
@@ -553,6 +629,25 @@ def main():
 				sys.exit(0)
 			except:
 				sys.exit(1)
+
+                if options.flushq:
+                        try:
+                                dirf = glob.glob(avocadoQueueDir+"*")
+                                for file in dirf:
+                                        os.unlink(file)
+                                sys.exit(0)
+                        except:
+                                sys.exit(1)
+
+
+                if options.flushc:
+                        try:
+                                dirf = glob.glob(avocadoCacheDir+"*")
+                                for file in dirf:
+                                        os.unlink(file)
+                                sys.exit(0)
+                        except:
+                                sys.exit(1)
 
 		if options.add and options.addtype:
 
@@ -564,6 +659,8 @@ def main():
 				_type="video"
 			elif options.addtype == "webbrowse":
 				_type="webbrowse"
+			elif options.addtype == "stream":
+				_type="stream"
 
 			if not _type:
 				logger.error("unkown type: "+options.addtype+" for "+options.add)		
@@ -573,6 +670,9 @@ def main():
 
 		elif options.list:
 			listQ(avocadoQueueDir,options.htmloutput)
+
+		elif options.listkiosk:
+			listQ(avocadoKioskQueueDir,options.htmloutput)
 	
 		elif options.listcache:
 			listCache(avocadoCacheDir,options.htmloutput)
