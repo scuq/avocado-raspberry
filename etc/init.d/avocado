@@ -1,0 +1,71 @@
+#! /bin/bash
+### BEGIN INIT INFO
+# Provides:          avocado
+# Required-Start:    $network
+# Required-Stop:     $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: avocado-geek-kiosk
+# Description:       avocado-geek-kiosk
+### END INIT INFO
+
+export pidfile="/var/run/avocado/avocado.pid"
+
+
+start_avocado() {
+	if [ -d /var/run/avocado/ ]; then
+		chown -R pi:www-data /var/run/avocado/
+	else
+		mkdir -p /var/run/avocado/
+		chown -R pi:www-data /var/run/avocado/
+	fi
+
+	su - pi -c "screen -dmS avocado /usr/local/bin/avocado.py -D"
+}
+
+start_avocado_kiosk() {
+        if [ -d /var/run/avocado/ ]; then
+                chown -R pi:www-data /var/run/avocado/
+        else
+                mkdir -p /var/run/avocado/
+                chown -R pi:www-data /var/run/avocado/
+        fi
+	su - pi -c "screen -dmS avocado /usr/local/bin/avocado.py -D --kiosk"
+}
+
+stop_avocado() {
+        avocadopid=`cat /var/run/avocado/avocado.pid`
+
+        kill $avocadopid
+        kill -9 $avocadopid 2>/dev/null
+}
+
+
+export PATH="${PATH:+$PATH:}/usr/sbin:/sbin"
+
+case "$1" in
+  start)
+	echo "Starting Avocado in Kiosk-Mode ..."
+	start_avocado_kiosk
+	;;
+  startnokiosk)
+	echo "Starting Avocado ..."
+	start_avocado
+	;;
+  stop)
+	echo "Stopping Avocado ..."
+	stop_avocado
+	;;
+
+  restart)
+	echo "Restarting Avocado ..."
+	stop_avocado
+	start_avocado
+	;;
+
+  *)
+	echo "Usage: /etc/init.d/avocado {start|stop|restart|startnokiosk}"
+	exit 1
+esac
+
+exit 0

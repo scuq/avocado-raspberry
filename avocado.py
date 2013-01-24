@@ -42,10 +42,13 @@
 # for your convenience the avocado queue can be viewed and filled by a simple webinterface running on lighttpd with php5-cgi 
 #
 # todos:
-# - background downloading
+# - background downloading/cache prefill
+# - kiosk q dedejavuing
 #
-# version: 0.3 - early dirty alpha hack
+# version: 0.3.2 - early dirty alpha hack
 # changelog:
+# - init script and screen as daemon
+# - fixes issues with kiosk q
 # - streaming urls
 # - added random kiosk q
 # - cache dir space check
@@ -53,6 +56,7 @@
 # 
 
 scriptid="avocado"
+
 
 import sys
 import stat
@@ -74,11 +78,10 @@ syslog.setFormatter(formatter)
 logger.addHandler(syslog)
 from optparse import OptionParser
 from pwd import getpwnam
+import pwd, grp
 import tempfile
 from subprocess import Popen, PIPE, STDOUT
 
-# daemon filehandles
-import resource
 
 def avocadoExit(code=0):
 
@@ -95,6 +98,70 @@ def avocadoExit(code=0):
 	p = Popen("killall qiv", shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
 
 	sys.exit(code)
+
+def writePidFile(file,pid):
+
+        pid_file = open(file, "w")
+        pid_file.write(str(pid))
+        pid_file.close()
+
+def drop_privileges(uid_name='nobody', gid_name='nogroup'):
+
+
+
+
+	starting_uid = os.getuid()
+	starting_gid = os.getgid()
+
+
+	starting_uid_name = pwd.getpwuid(starting_uid)[0]
+
+
+	logger.info('drop_privileges: started as %s/%s' % \
+	(pwd.getpwuid(starting_uid)[0],
+	grp.getgrgid(starting_gid)[0]))
+
+
+	if os.getuid() != 0:
+		# We're not root so, like, whatever dude
+		logger.info("drop_privileges: already running as '%s'"%starting_uid_name)
+		return
+
+
+	# If we started as root, drop privs and become the specified user/group
+	if starting_uid == 0:
+
+
+	# Get the uid/gid from the name
+		running_uid = pwd.getpwnam(uid_name)[2]
+		running_gid = grp.getgrnam(gid_name)[2]
+
+
+		# Try setting the new uid/gid
+		try:
+			os.setgid(running_gid)
+		except OSError, e:
+			logger.error('Could not set effective group id: %s' % e)
+
+
+		try:
+			os.setuid(running_uid)
+		except OSError, e:
+			logger.error('Could not set effective user id: %s' % e)
+
+
+		# Ensure a very convervative umask
+		new_umask = 077
+		old_umask = os.umask(new_umask)
+		logger.info('drop_privileges: Old umask: %s, new umask: %s' % \
+			(oct(old_umask), oct(new_umask)))
+
+
+	final_uid = os.getuid()
+	final_gid = os.getgid()
+	logger.info('drop_privileges: running as %s/%s' % \
+		(pwd.getpwuid(final_uid)[0],
+		grp.getgrgid(final_gid)[0]))
 
 def get_fs_freespace(pathname):
     "Get the free space of the filesystem containing pathname"
@@ -129,63 +196,11 @@ def human_size(size_bytes):
 
     return "%s %s" % (formatted_size, suffix)
 
-def realDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode=False):
+def avocadoDaemon(avocadoPidFile, avocadoDir, avocadoWebDir, avocadoLocalPicsDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode=False):
 
-        # first fork
-    try:
-        pid = os.fork()
-        if pid > 0:
-        # exit first parent
-            sys.exit(0)
-    except (OSError):
-        print (str(sys.exc_info()[1]))
-        sys.exit(1)
+	drop_privileges("pi", "www-data")
 
-    # change environment
-    os.chdir("/")
-
-    # session leader of this new session and process group leader of the new process group
-    os.setsid()
-    os.umask(0)
-
-    # second fork, causes the second child process to be orphaned making the init process responsible for its cleanup
-
-    try:
-        pid = os.fork()
-        if pid > 0:
-        # exit from second parent, print eventual PID before
-        #print "Daemon PID %d" % pid
-        #open(PIDFILE,'w').write("%d"%pid)
-            sys.exit(0)
-    except (OSError):
-        print (str(sys.exc_info()[1]))
-        sys.exit(1)
-
-
-
-    # retrieve the maximum file descriptor number if there is no limit on the resource, use the default value
-    maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
-    if (maxfd == resource.RLIM_INFINITY):
-        maxfd = "1024"
-
-    # close all file descriptors
-    for fd in range(0, maxfd):
-        try:
-            os.close(fd)
-        except OSError: # ERROR, fd wasn't open to begin with (ignored)
-            pass
-
-    # # standard input (0)
-    os.open("/dev/null", os.O_RDWR)
-
-    # duplicate standard input to standard output and standard error.
-    os.dup2(0, 1)
-    os.dup2(0, 2)
-
-    # daemon code
-    avocadoDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode)
-
-def avocadoDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir, avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, kioskmode=False):
+	writePidFile(avocadoPidFile,os.getpid())	
 
 	logger.info("avocadoDaemon started.")
 
@@ -309,9 +324,12 @@ def getQContents(avocadoQueueDir, randomq=False):
         _q.sort(key=lambda s: os.path.getmtime(os.path.join(avocadoQueueDir, s)))
 
 
-	if randomq==True:
-		random.shuffle(_q,random.random)
-		_q=[_q[0]]
+	try:
+		if randomq==True:
+			random.shuffle(_q,random.random)
+			_q=[_q[0]]
+	except:
+		return q
 
 
         for _itemname in _q:
@@ -419,29 +437,39 @@ def nextInQ(avocadoQueueDir,avocadoCacheDir,avocadoCacheValidateDir,avocadoDir,a
 				logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
 				logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
 
+				if p.returncode != 0:
+					removeFromQ(avocadoQueueDir, jobname)
+
 
 				if os.path.isfile(avocadoCacheDir+base64.b64encode(job["item"])):
 					logger.info("creating cache valid  file: "+avocadoCacheValidateDir+base64.b64encode(job["item"]))
 					open(avocadoCacheValidateDir+base64.b64encode(job["item"]), 'w').close() 
 
-				_command="export DISPLAY=:0.0 && omxplayer "+avocadoCacheDir+base64.b64encode(job["item"])
-
-				logger.info(_command)
-				setWebStatus(avocadoDir,_command)
-
-				p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
-				logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
-				logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
-
 			else: 
 				logger.info("NOT enough space to cache youtube file, available space: "+str(get_fs_freespace(avocadoCacheDir)-104857600)+" video size: "+str(_vidsize))
+				setWebStatus(avocadoDir,"not enough disk space")
 
-		unsetWebStatus(avocadoDir)
-		removeFromQ(avocadoQueueDir, jobname)
+		if os.path.exists(avocadoCacheDir+base64.b64encode(job["item"])):
+
+			_command="export DISPLAY=:0.0 && omxplayer "+avocadoCacheDir+base64.b64encode(job["item"])
+
+			logger.info(_command)
+			setWebStatus(avocadoDir,_command)
+
+			p = Popen(_command, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE, close_fds=True)
+			logger.info(re.sub('\\n+','',str(p.stdout.read().decode("utf-8"))))
+			logger.error(re.sub('\\n+','',str(p.stderr.read().decode("utf-8"))))
+
+
+			unsetWebStatus(avocadoDir)
+			removeFromQ(avocadoQueueDir, jobname)
+		else:
+			logger.warn(avocadoCacheDir+base64.b64encode(job["item"])+" doesn't exist.")
+			
 
 	if job["type"]=="webbrowse":
 
-		_command="export DISPLAY=:0.0 && timeout "+job["timeout"]+" midori -e Fullscreen -a "+job["item"]+" 2>/dev/null"
+		_command="timeout "+job["timeout"]+" midori -e Fullscreen --display=:0.0 -a "+job["item"]+" 2>/dev/null"
 		#_command="export DISPLAY=:0.0 && timeout 20s dillo -f -g 1920x1080 "+job["item"]+" 2>/dev/null"
 		#_command="export DISPLAY=:0.0 && timeout 20s iceweasel -P avocado -height 1080 -width 1920 "+job["item"]+" 2>/dev/null"
 		logger.info(_command)
@@ -514,6 +542,7 @@ def listCache(avocadoCacheDir,html=False):
 
 def listQ(avocadoQueueDir,html=False):
 
+
 	contents = getQContents(avocadoQueueDir)
 
 	if html:
@@ -579,6 +608,7 @@ def main():
 			avocadoGid=0
 
 
+		avocadoPidFile="/var/run/avocado/avocado.pid"
 		avocadoDir="/var/lib/avocado/"
 		avocadoWebDir="/var/www/"
 		avocadoLocalPicsDir="/var/lib/avocado/local_pics/"
@@ -613,8 +643,8 @@ def main():
 		_type=None
 	
 		if options.daemon:
-			#realDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir,  avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, options.kioskmode)
-			avocadoDaemon(avocadoDir, avocadoWebDir, avocadoLocalPicsDir,  avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, options.kioskmode)
+			avocadoDaemon(avocadoPidFile, avocadoDir, avocadoWebDir, avocadoLocalPicsDir,  avocadoQueueDir, avocadoCacheDir, avocadoCacheValidateDir, avocadoKioskQueueDir, options.kioskmode)
+
 
 		if not options.addtimeout:
 			_timeout="30m"
